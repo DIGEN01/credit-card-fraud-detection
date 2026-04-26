@@ -17,7 +17,7 @@ This project was built around the CRISP-DM methodology and split into three phas
 | Property | Details |
 |----------|----------|
 | Source | [Kaggle - Credit Card Transactions Dataset](https://www.kaggle.com/datasets/priyamchoksi/credit-card-transactions-dataset) |
-| Total Transactions | ~1.8 million records |
+| Total Transactions | ~1.3 million records |
 | Fraud Cases | 7,506 (0.58%) |
 | Legitimate | 1,289,169 (99.42%) |
 | Fraud Amount (avg) | $531.30 per transaction |

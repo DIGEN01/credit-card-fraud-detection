@@ -44,7 +44,7 @@ These insights directly informed six of the fourteen engineered features used in
 
 ## Phase 2 - Predictive Analytics
 
-The Jupyter notebook (`credit_card_transactions.ipynb`) contains the full ML pipeline including data preprocessing, feature engineering, model training, evaluation, and statistical testing.
+The Jupyter notebook (`Jupyter Notebook.ipynb`) contains the full ML pipeline including data preprocessing, feature engineering, model training, evaluation, and statistical testing.
 
 ### Data Preparation
 
@@ -136,7 +136,7 @@ The routing architecture concentrates genuine fraud in the highest-risk tiers wh
 ```
 credit-card-fraud-detection/
 |-- README.md                          # This file
-|-- credit_card_transactions.ipynb     # Main Jupyter notebook (all 3 phases)
+|-- Jupyter Notebook.ipynb     # Main Jupyter notebook (all 3 phases)
 |-- report.pdf                         # Full written report
 |-- reports/                           # Tableau dashboard and visual outputs
 |-- data/                              # Dataset folder
@@ -162,7 +162,7 @@ credit-card-fraud-detection/
 
 4. Open and run the notebook:
    ```
-   jupyter notebook credit_card_transactions.ipynb
+   jupyter notebook "Jupyter Notebook.ipynb"
    ```
 
 ## Tools and Libraries

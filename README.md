@@ -1,183 +1,229 @@
 # Credit Card Fraud Detection
 
-A three-phase credit card fraud detection project combining descriptive analytics, Python machine learning, and a prescriptive fraud risk routing system. Built on approximately 1.8 million simulated credit card transactions with 7,506 confirmed fraud cases (0.58% fraud rate).
+![Final pipeline overview](Final%20Pipeline%20Overview.png)
 
-## Project Overview
+An end-to-end fraud detection project on 1,296,675 simulated card transactions: Tableau for pattern discovery, three machine learning models in Python, and a probability-band routing system that turns a model score into an actual business decision.
 
-Credit card fraud is one of the most damaging and technically complex problems in financial services. The core challenge is not just building a model that detects fraud, but building a system that is statistically rigorous and operationally deployable. Fraud detection is uniquely difficult because the data is severely imbalanced (roughly 170 legitimate transactions for every fraud case), fraud patterns shift across time and merchant category, and the cost of a missed fraud far exceeds the cost of a false alarm.
+The headline result on a held-out, strictly later time period: **96.90% precision at 89.34% recall**, catching 1,374 of 1,538 fraud cases while raising only 44 false alarms across 257,797 legitimate transactions.
 
-This project was built around the CRISP-DM methodology and split into three phases:
+The more interesting part of this project is what had to be fixed to get an honest number. An earlier version of this analysis scored considerably better and was wrong, because five of its features leaked information from the future and the train/test split let the model learn from transactions that happened after the ones it was tested on. Both are documented below, along with three design ideas that were tested and rejected.
 
-1. **Phase 1 - Descriptive Analytics**: Tableau-based pattern discovery uncovering when, where, and how fraud occurs. This phase is embedded in the Jupyter notebook alongside the ML pipeline.
-2. **Phase 2 - Predictive Analytics**: Three machine learning models (ANN, Random Forest, XGBoost) with class-imbalance handling, threshold optimization, and statistical hypothesis testing.
-3. **Phase 3 - Prescriptive Analytics**: A 4-tier routing system that converts model probability scores into automated business decisions.
+---
+
+## Results at a glance
+
+Test set: 259,335 transactions from the last 20% of the timeline, containing 1,538 fraud cases.
+
+| Model | Precision | Recall | F1 | AUC-ROC | Fraud caught | Fraud missed | Missed fraud $ | False alarms |
+|---|---|---|---|---|---|---|---|---|
+| ANN (threshold 0.80) | 0.9460 | 0.8544 | 0.8978 | 0.9987 | 1,314 | 224 | $56,497.79 | 75 |
+| Random Forest (0.50) | 0.8864 | 0.8375 | 0.8613 | 0.9975 | 1,288 | 250 | $51,959.58 | 165 |
+| XGBoost (0.50) | 0.9481 | 0.8908 | 0.9185 | 0.9994 | 1,370 | 168 | $33,174.27 | 75 |
+| **Routing pipeline** | **0.9690** | **0.8934** | **0.9296** | n/a | **1,374** | **164** | **$30,511.66** | **44** |
+
+Missed fraud is reported in dollars as well as counts, because a model that misses four small frauds is not equivalent to one that misses four large ones. Threshold choices in this project were made against the dollar column, not just F1.
+
+---
 
 ## Dataset
 
-| Property | Details |
-|----------|----------|
-| Source | [Kaggle - Credit Card Transactions Dataset](https://www.kaggle.com/datasets/priyamchoksi/credit-card-transactions-dataset) |
-| Total Transactions | ~1.3 million records |
-| Fraud Cases | 7,506 (0.58%) |
+| Property | Value |
+|---|---|
+| Source | [Kaggle: Credit Card Transactions Dataset](https://www.kaggle.com/datasets/priyamchoksi/credit-card-transactions-dataset) |
+| Transactions | 1,296,675 |
+| Fraud cases | 7,506 (0.5789%) |
 | Legitimate | 1,289,169 (99.42%) |
-| Fraud Amount (avg) | $531.30 per transaction |
-| Key Numerical Features | amt, age, distance, merchlat, merchlong |
-| Key Categorical Features | category, gender, merchant, state |
-| Target Variable | isfraud (0 = legitimate, 1 = fraudulent) |
+| Unique cards | 983 |
+| Date span | 537 days |
+| Target | `is_fraud` (0 = legitimate, 1 = fraud) |
 
-> Note: The raw dataset file is not included in this repo due to size. Download it from the Kaggle link above and place it in the `data/` folder as `credit_card_transactions.csv` before running the notebook.
->
-> ## Phase 1 - Descriptive Analytics
+With 99.42% of rows legitimate, a model that predicts "never fraud" scores 99.42% accuracy and is completely useless. Accuracy is not reported anywhere in this project. Precision, recall and missed-fraud dollars are.
 
-The descriptive analytics phase was conducted in Tableau Desktop after data preparation in Tableau Prep. The cleaned dataset was loaded into Tableau to build a comprehensive fraud analytics dashboard that answered the foundational question: when, where, who, and how does fraud occur. All insights from this phase were then incorporated into the Jupyter notebook for the ML pipeline.
+The raw CSV is not in this repo because of its size. Download it from the Kaggle link and place it in `data/` as `credit_card_transactions.csv`.
 
-### Key Findings from Descriptive Analysis
+---
 
-- **Monthly Pattern**: Fraud peaks sharply in December, driven by holiday shopping. Online shopping categories average $1,010 per fraudulent transaction during this period.
-- **Hourly Pattern**: Fraud concentrates between 10 PM and 3 AM, exceeding 1,200 transactions per hour at peak, which is over 10 times the daytime baseline.
-- **Weekly Pattern**: Saturday, Sunday, and Monday consistently record the highest fraud counts, roughly 20-25% above the weekly average.
-- **Category Concentration**: Four categories account for over 65% of fraud. Grocery POS fraud almost exclusively occurs between midnight and 3 AM, consistent with card-present skimming at unattended terminals.
-- **Demographic Pattern**: Elderly cardholders (65+) bear a disproportionate share of fraud at 27.36%, while young adults (18-25) show the lowest exposure at 2.33%.
-- **Amount Signal**: Average fraudulent transaction ($531.30) is substantially larger than legitimate ones ($70.35), which motivated the `amtratio` engineered feature.
+## Phase 1: Descriptive analytics (Tableau)
 
-These insights directly informed six of the fourteen engineered features used in the machine learning phase.
+Data was cleaned in Tableau Prep Builder, then explored in Tableau Desktop to establish when, where and to whom fraud happens. Each finding below became an engineered feature in Phase 2.
 
-## Phase 2 - Predictive Analytics
+- **Time of day.** Fraud sits near baseline through the day and rises steeply from 21:00, staying elevated until roughly 04:00. The `is_night` feature is defined as 21:00 to 03:59 to match this observed window rather than a generic "night" guess.
+- **Seasonality.** Fraud peaks in December. Online shopping fraud in that month averages roughly $1,010 per transaction, well above its already elevated baseline.
+- **Category concentration.** Fraud is not spread evenly. Five categories account for roughly 78% of all fraud cases, led by `shopping_net` at 22.82% with an average fraud amount around $999.
+- **Demographics.** Cardholders aged 65 and over absorb 27.36% of all fraud, a disproportionate share.
+- **Amount.** Fraudulent transactions are markedly larger than a cardholder's own typical spend, which motivated the amount-ratio and amount-deviation features.
 
-The Jupyter notebook (`Jupyter Notebook.ipynb`) contains the full ML pipeline including data preprocessing, feature engineering, model training, evaluation, and statistical testing.
+---
 
-### Data Preparation
+## Phase 2: Predictive analytics
 
-All data cleaning was performed in Tableau Prep Builder before modeling, including column removal, age calculation from date of birth, null handling, and duplicate removal. The cleaned dataset was then imported into Python for additional preprocessing steps.
+### Leak-safe feature engineering
 
-### Feature Engineering
+This is the part worth reading. Five behavioural features were originally built with a plain group-by across the whole dataset:
 
-Fourteen domain-specific features were engineered, with six directly motivated by the descriptive analytics phase:
+```python
+# WRONG: every row's "average spend" includes transactions that happen after it
+df["avg_amt_per_card"] = df.groupby("cc_num")["amt"].transform("mean")
+```
 
-- **amtratio**: Ratio of transaction amount to cardholder's historical average. A high ratio signals an unusually large purchase.
-- **amtdeviation**: Standard deviation-normalized deviation from per-card mean, capturing statistical outliers.
-- **avgamtpercard**: Rolling average transaction amount per card, establishing a behavioral baseline.
-- **txcountpercard**: Number of transactions per card, a frequency-based anomaly signal.
-- **merchtxcount**: Transaction volume per merchant, flagging high-fraud-concentration merchants.
-- **isnight**: Binary flag for transactions between 22:00-06:00. Night-time transactions carry higher fraud risk.
-- **hour, month, weekday**: Temporal decomposition of transaction timestamps.
-- **age**: Cardholder age derived from date of birth.
-- **categoryenc, genderenc**: Label-encoded categorical variables.
-- **distance**: Geographic distance computed using ECEF (Earth-Centered Earth-Fixed) coordinate conversion, which accurately calculates distance on a sphere rather than naive lat/long subtraction.
+A model trained on that knows the future. It scores beautifully and would collapse in production. All five were rebuilt to look strictly backwards:
 
-### Models Trained
+```python
+# RIGHT: a 150-day trailing window, excluding the current transaction
+_rolling_sum = _time_indexed.groupby("cc_num")["amt"].rolling("150D").sum()
+_rolling_count = _time_indexed.groupby("cc_num")["amt"].rolling("150D").count()
+```
 
-Three complementary algorithms were trained on an 80/20 stratified split with class-weighted handling (no SMOTE oversampling) and threshold optimization via Precision-Recall curve analysis.
+Counts (`tx_count_per_card`, `merch_tx_count`, `prior_fraud_count`) were rebuilt the same way, as expanding prior counts. This cost real measurable performance. That drop is the honest number.
 
-| Model | AUC-ROC | Precision | Recall | F1 Score | Fraud Caught | False Alarms |
-|-------|---------|-----------|--------|----------|--------------|---------------|
-| ANN | 0.9986 | 0.88 | 0.84 | 0.86 | 1,275 | 153 |
-| Random Forest | 0.9982 | 0.92 | 0.82 | 0.86 | 1,227 | 110 |
-| XGBoost | 0.9988 | 0.93 | 0.83 | 0.88 | 1,243 | 93 |
+### Chronological split
 
-XGBoost achieved the best overall performance with the highest AUC-ROC (0.9988), precision (0.93), and F1 score (0.88). ANN caught the most fraud cases (1,275) due to its higher recall. Random Forest produced the fewest false alarms (110).
+The split was also wrong. A random stratified split lets training rows sit *after* test rows on the timeline, so even leak-safe features get evaluated optimistically. It was replaced with a chronological cut at the 80th percentile of the timestamp:
 
-### Feature Importance Insights
+- Cutoff: **2020-03-06**
+- Train: 1,037,340 rows (0.5753% fraud)
+- Test: 259,335 rows (0.5931% fraud)
 
-- **Random Forest**: Concentrates 61.4% of decision weight on amount features (amt, amtdeviation, amtratio), making it the amount anomaly specialist.
-- **XGBoost**: Uniquely captures temporal and geographic signals (month and distance both at 12% importance) that Random Forest largely ignores.
-- **ANN**: Uses One-Hot Encoding for categories, giving it independent fraud weights per merchant category, making it the strongest categorical anomaly detector.
+The model is therefore trained on the past and tested on the future, which is how it would actually be used.
 
-### Statistical Hypothesis Testing
+### Model inputs
 
-Two statistical tests were conducted to validate model performance and justify the routing ensemble design.
+Sixteen numeric features plus two categoricals:
 
-#### Test 1: McNemar's Test (Pairwise Model Comparison)
+`amt`, `age`, `distance`, `hour`, `week`, `month`, `is_night`, `merch_lat`, `merch_long`, `avg_amt_per_card`, `amt_ratio`, `amt_deviation`, `tx_count_per_card`, `merch_tx_count`, `prior_fraud_count`, `implied_speed_kmh`, plus `category` and `gender`.
 
-McNemar's Test compares two classifiers evaluated on the same test set, focusing on transactions where they disagree. A significant result (p < 0.05) means the models are making errors on genuinely different transactions, justifying their combined use in an ensemble.
+`distance` is computed with an ECEF (Earth-Centered, Earth-Fixed) coordinate conversion rather than naive latitude/longitude subtraction, so it is a true great-circle distance. `implied_speed_kmh` divides that distance by the gap since the card's previous transaction, flagging physically impossible travel.
 
-| Model Pair | Both Correct | A right / B wrong | A wrong / B right | Both Wrong | p-value | Decision |
-|------------|-------------|-------------------|-------------------|------------|---------|----------|
-| ANN vs RF | 258,822 | 78 | 115 | 320 | 0.009560 | Reject H0 |
-| ANN vs XGBoost | 258,813 | 87 | 151 | 284 | 0.000044 | Reject H0 |
-| RF vs XGBoost | 258,875 | 62 | 89 | 309 | 0.034358 | Reject H0 |
+The ANN one-hot encodes the categoricals; the tree models use label encoding. Class imbalance is handled with class weights, not SMOTE.
 
-All three pairwise comparisons reject the null hypothesis. Each model makes errors on a statistically distinct set of transactions. This provides formal justification for routing transactions to the domain-specialist model rather than deploying a single model.
+### Overfitting check
 
-#### Test 2: Mann-Whitney U Test (Fraud vs Legitimate Score Distributions)
+| Model | Train AUC | Test AUC | AUC gap | Recall gap |
+|---|---|---|---|---|
+| ANN | 0.9996 | 0.9987 | 0.0009 | 0.0406 |
+| Random Forest | 0.9999 | 0.9975 | 0.0024 | 0.1295 |
+| XGBoost | 1.0000 | 0.9994 | 0.0006 | 0.1037 |
 
-The Mann-Whitney U Test compares fraud probability score distributions between confirmed fraud and legitimate transactions. It confirms that model probability outputs are meaningful and well-separated enough to support threshold-based routing.
+AUC gaps are negligible. The recall gaps on the tree models are the normal cost of a chronological split, where the test period contains fraud patterns the training period never showed.
 
-| Model | Fraud Mean Score | Legit Mean Score | p-value | Effect Size (r) | Decision |
-|-------|-----------------|------------------|---------|-----------------|----------|
-| ANN | 0.8360 | 0.0032 | 0.00 | 0.9957 | Reject H0 |
-| Random Forest | 0.8138 | 0.0055 | 0.00 | 0.9954 | Reject H0 |
-| XGBoost | 0.8357 | 0.0039 | 0.00 | 0.9961 | Reject H0 |
+### Statistical validation
 
-All three models achieve effect sizes above 0.995, meaning if you randomly pick one fraud and one legitimate transaction, the model will assign a higher fraud probability to the fraud case in over 99.5% of instances. This near-perfect separation validates that the probability thresholds used in the routing system are statistically defensible.
+**Cochran's Q** (omnibus, all three models at once): Q = 123.1360, df = 2, p < 0.001. The three models do not have the same error rate.
 
-## Phase 3 - Prescriptive Analytics
+**McNemar's test** (pairwise, run only because the omnibus test was significant, which keeps the multiple-comparisons problem under control):
 
-The prescriptive phase converts model probability scores into deterministic, automated business decisions through a 4-tier action framework. Every incoming transaction is scored by the domain-specialist model and routed based on its composite fraud probability and risk score.
+| Pair | p-value | Result |
+|---|---|---|
+| ANN vs Random Forest | 0.000000 | Significant |
+| ANN vs XGBoost | 0.000066 | Significant |
+| Random Forest vs XGBoost | 0.000000 | Significant |
 
-### 4-Tier Routing Framework
+All three pairs differ significantly, so the models genuinely make different mistakes. That is the precondition for any ensemble being worth trying.
 
-| Tier | Condition | Action |
-|------|-----------|----------|
-| BLOCK + REVIEW | p >= 0.85 or score >= 70 | Block transaction, open fraud investigation case |
-| ML Council | prob >= 60 and (amt > 500 or score >= 50) | All three models vote, majority wins |
-| STEP-UP AUTH | prob >= 30 or score >= 20 | Prompt OTP / 2FA verification |
-| AUTO ALLOW | p < 0.30 and score < 20 | Process immediately, no customer friction |
+**Mann-Whitney U** (are fraud and legitimate score distributions separable?):
 
-The framework was evaluated on the full held-out test set. Key results:
-- **BLOCK+REVIEW precision**: 95.2% - 96.9% across all three models (when the system recommends a block, it is correct 19 times out of 20)
-- **Frictionless rate**: 99.93% of legitimate transactions flow through AUTO ALLOW without any customer friction
-- **Financial protection**: $547K - $670K in fraud prevented per cycle
+| Model | Fraud mean | Legit mean | Effect size r |
+|---|---|---|---|
+| ANN | 0.8890 | 0.0021 | 0.9974 |
+| Random Forest | 0.7848 | 0.0097 | 0.9951 |
+| XGBoost | 0.8783 | 0.0010 | 0.9988 |
 
-The routing architecture concentrates genuine fraud in the highest-risk tiers while keeping the vast majority of legitimate transactions in the frictionless AUTO ALLOW tier.
+Pick one fraud case and one legitimate transaction at random and the model ranks the fraud higher more than 99.5% of the time. That is what makes probability-band routing defensible.
 
-## File Structure
+---
+
+## Phase 3: Prescriptive analytics
+
+Every transaction is scored once by XGBoost, then routed by how trustworthy that score is in its particular range.
+
+| XGBoost probability | Action | How the decision is made | Transactions | Fraud | Fraud rate |
+|---|---|---|---|---|---|
+| Below 0.30 | AUTO_ALLOW | XGBoost alone, no further scoring | 257,767 | 133 | 0.05% |
+| 0.30 to 0.40 | AI_COUNCIL_A | Weighted blend 70/15/15, cutoff 0.50 | 69 | 18 | 26.09% |
+| 0.40 to 0.55 | AI_COUNCIL_B | Weighted blend 60/20/20, cutoff 0.50 | 68 | 24 | 35.29% |
+| 0.55 to 0.72 | STEP_UP_AUTH | Cardholder verifies via OTP / 2FA | 81 | 44 | 54.32% |
+| 0.72 and above | BLOCK_AND_REVIEW | Blocked, unless the amount exceeds $2,000 | 1,350 | 1,319 | 97.70% |
+
+The band edges are not arbitrary. They come from a calibration check comparing predicted against observed fraud rate per probability band, which identifies exactly where XGBoost's own confidence stops tracking reality and a second opinion becomes worth paying for.
+
+**99.4% of all transactions clear automatically** with no customer friction at all.
+
+### What the pipeline actually buys, decomposed
+
+The pipeline avoids 31 false positives relative to XGBoost alone. Where they come from matters:
+
+| Band | XGBoost alone | Pipeline | FP avoided |
+|---|---|---|---|
+| AI_COUNCIL_B | 7 | 13 | **-6** |
+| STEP_UP_AUTH | 37 | 0 | **+37** |
+| BLOCK_AND_REVIEW | 31 | 31 | 0 |
+
+The two ensemble bands are **net negative** by six false positives. Essentially the entire gain comes from the step-up tier, which resolves against the transaction's true outcome, modelling the fact that a genuine cardholder passes a 2FA challenge and a thief generally does not.
+
+That assumption is real capability, not a trick, but it is doing almost all of the work and this project says so plainly rather than presenting the result as a clean three-model win. The notebook computes this decomposition explicitly.
+
+---
+
+## Three ideas that were tested and rejected
+
+Kept in the write-up because negative results are results.
+
+1. **Blanket ensembling.** Averaging all three models on every transaction does not beat XGBoost alone. Simple and F1-weighted averaging both land at F1 0.9159 and 0.9156 against XGBoost's 0.9185, and majority voting is worse still at 0.9084.
+2. **Anomaly-type routing.** The original design routed each transaction to whichever model specialised in its anomaly type. XGBoost wins every single category, so there is nothing to route on. The idea became a hypothesis that was tested and rejected rather than a feature.
+3. **Small-amount auto-allow.** Auto-approving everything under a dollar floor exploded missed fraud for almost no false-positive gain.
+
+A related finding sets the ceiling on the whole routing idea: of the 168 fraud cases XGBoost misses, 136 are missed by all three models. **Only 32 are cases another model actually catches.** That is the real size of the opportunity, not the 171 an earlier version of this analysis claimed.
+
+---
+
+## Known limitations
+
+- **983 unique cards.** Per-card behavioural history is far richer here than it would be in a real portfolio, so the behavioural features are likely optimistic.
+- **Simulated data.** Fraud patterns are cleaner and more learnable than real card fraud.
+- **The 2FA assumption.** Quantified above. A thief who has also compromised the cardholder's phone defeats it, and the model cannot see that.
+
+---
+
+## Repository structure
 
 ```
 credit-card-fraud-detection/
-|-- README.md                          # This file
-|-- Jupyter Notebook.ipynb     # Main Jupyter notebook (all 3 phases)
-|-- report.pdf                         # Full written report
-|-- reports/                           # Tableau dashboard and visual outputs
-|-- data/                              # Dataset folder
-|   |-- credit_card_transactions.csv   # Download from Kaggle
-|-- requirements.txt                   # Python dependencies
-|-- .gitignore                         # Git ignore rules
+|-- README.md
+|-- Jupyter Notebook.ipynb                          # Full pipeline, all three phases
+|-- Final Pipeline Overview.png                     # Routing diagram
+|-- Tableau_dashboard.pdf                           # Phase 1 dashboard export
+|-- reports/
+|   |-- CreditCard_Fraud_Detection_Report.docx      # Full written report
+|-- data/
+|   |-- Dataset link.txt                            # Download instructions
+|-- requirements.txt
+|-- .gitignore
 ```
 
-## How to Run
+## How to run
 
-1. Clone this repository:
-   ```
-   git clone https://github.com/DIGEN01/credit-card-fraud-detection.git
-   cd credit-card-fraud-detection
-   ```
+```bash
+git clone https://github.com/DIGEN01/credit-card-fraud-detection.git
+cd credit-card-fraud-detection
+pip install -r requirements.txt
+```
 
-2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+Download the dataset from [Kaggle](https://www.kaggle.com/datasets/priyamchoksi/credit-card-transactions-dataset), place it in `data/` as `credit_card_transactions.csv`, then:
 
-3. Download the dataset from [Kaggle](https://www.kaggle.com/datasets/priyamchoksi/credit-card-transactions-dataset) and place it in the `data/` folder as `credit_card_transactions.csv`
+```bash
+jupyter notebook "Jupyter Notebook.ipynb"
+```
 
-4. Open and run the notebook:
-   ```
-   jupyter notebook "Jupyter Notebook.ipynb"
-   ```
+XGBoost is not bitwise reproducible across runs, so the figures above may shift by a few cases on a fresh execution.
 
-## Tools and Libraries
+## Tools and libraries
 
-- **Python 3.x** - Core language for data processing and ML
-- **pandas, numpy** - Data manipulation
-- **scikit-learn** - Machine learning models and evaluation
-- **xgboost** - Gradient boosting model
-- **tensorflow / keras** - Neural network (ANN) model
-- **scipy, statsmodels** - Statistical hypothesis testing (McNemar's Test, Mann-Whitney U)
-- **matplotlib, seaborn** - Visualizations
-- **Tableau Prep** - Data cleaning and preparation
-- **Tableau Desktop** - Descriptive analytics dashboard
-- **Jupyter Notebook** - Interactive analysis environment
+**Python 3** with pandas, numpy, scikit-learn, xgboost, tensorflow/keras, scipy, statsmodels, matplotlib and seaborn. **Tableau Prep Builder** for cleaning and **Tableau Desktop** for the Phase 1 dashboard.
+
+## Author
+
+Digen Naik, Post-Baccalaureate Diploma in Business Analytics, Cape Breton University.
 
 ## License
 
-This project is for educational purposes. The dataset is subject to Kaggle's terms of use.
+Educational project. The dataset is subject to Kaggle's terms of use.
